@@ -15,15 +15,24 @@ from langgraph_chat.state import ChatState
 def _get_llm() -> BaseChatModel:
     """Return a chat model based on environment configuration.
 
-    Uses OpenAI if OPENAI_API_KEY is set, otherwise falls back to a
-    deterministic echo model for development/testing.
+    Uses OpenAI-compatible API if OPENAI_API_KEY is set, otherwise falls
+    back to a deterministic echo model for development/testing.
+
+    Environment variables:
+        OPENAI_API_KEY: API key (required for real LLM).
+        OPENAI_API_BASE: Base URL, defaults to Zhipu AI endpoint.
+        OPENAI_MODEL: Model name, defaults to glm-4-flash.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
-            model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            base_url=os.environ.get(
+                "OPENAI_API_BASE",
+                "https://open.bigmodel.cn/api/paas/v4",
+            ),
+            model=os.environ.get("OPENAI_MODEL", "glm-4-flash"),
             temperature=0.7,
         )
 
