@@ -8,7 +8,7 @@ LangGraph Chat is a Python chat application built with LangGraph and FastAPI, ma
 
 ### Running the app
 
-Two ways to run:
+Three ways to run:
 
 **1. FastAPI dev server (Web Chat UI):**
 ```bash
@@ -16,10 +16,18 @@ uv run uvicorn langgraph_chat.server:app --host 0.0.0.0 --port 8000 --reload
 ```
 Opens at `http://localhost:8000`.
 
-**2. LangGraph dev server (LangGraph Platform API + Studio):**
+**2. Official LangGraph dev server (via langgraph CLI):**
 ```bash
 uv run langgraph dev --host 0.0.0.0 --port 2024 --no-browser
 ```
+
+**3. Custom LangGraph API server (self-implemented):**
+```bash
+uv run uvicorn langgraph_chat.api.app:app --host 0.0.0.0 --port 2024 --reload
+```
+Implements the same LangGraph Platform API from scratch (assistants, threads, runs, store).
+
+All API servers:
 - API: `http://localhost:2024`
 - Studio UI: `https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024`
 - API Docs: `http://localhost:2024/docs`
@@ -32,8 +40,9 @@ uv run langgraph dev --host 0.0.0.0 --port 2024 --no-browser
 | Lint | `uv run ruff check .` |
 | Type check | `uv run mypy langgraph_chat/ --ignore-missing-imports` |
 | Tests | `uv run pytest -v` |
-| FastAPI dev server | `uv run uvicorn langgraph_chat.server:app --host 0.0.0.0 --port 8000 --reload` |
+| FastAPI Chat UI | `uv run uvicorn langgraph_chat.server:app --host 0.0.0.0 --port 8000 --reload` |
 | LangGraph dev server | `uv run langgraph dev --host 0.0.0.0 --port 2024 --no-browser` |
+| Custom API server | `uv run uvicorn langgraph_chat.api.app:app --host 0.0.0.0 --port 2024 --reload` |
 
 ### Non-obvious caveats
 
