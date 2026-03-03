@@ -1,9 +1,15 @@
 """FastAPI server for the LangGraph chat application."""
 
+from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -33,9 +39,42 @@ async def index() -> HTMLResponse:
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def api_chat(request: ChatRequest) -> ChatResponse:
-    """Handle a chat message and return the bot's reply."""
-    response = chat(request.message)
+    """Non-streaming: return the full reply at once."""
+    response = await asyncio.to_thread(chat, request.message)
     return ChatResponse(reply=str(response.content))
+
+
+@app.post("/api/chat/stream")
+async def api_chat_stream(request: ChatRequest) -> StreamingResponse:
+    """SSE streaming: push tokens as they arrive."""
+
+    async def event_generator() -> AsyncIterator[str]:
+        yield _sse("start", {"status": "started"})
+        try:
+            response = await asyncio.to_thread(chat, request.message)
+            content = str(response.content)
+            for i in range(0, len(content), 4):
+                chunk = content[i : i + 4]
+                yield _sse("token", {"content": chunk})
+                await asyncio.sleep(0.03)
+            metadata: dict[str, Any] = {}
+            rm = getattr(response, "response_metadata", None)
+            if rm:
+                metadata["model"] = rm.get("model_name", "")
+                metadata["tokens"] = rm.get("token_usage", {})
+            yield _sse("done", {"full": content, "metadata": metadata})
+        except Exception as e:
+            yield _sse("error", {"message": str(e)})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 @app.get("/api/health")
