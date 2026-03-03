@@ -21,7 +21,7 @@ def _get_llm() -> BaseChatModel:
     Environment variables:
         OPENAI_API_KEY: API key (required for real LLM).
         OPENAI_API_BASE: Base URL, defaults to Zhipu AI endpoint.
-        OPENAI_MODEL: Model name, defaults to glm-4-flash.
+        OPENAI_MODEL: Model name, defaults to glm-5.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
@@ -32,7 +32,7 @@ def _get_llm() -> BaseChatModel:
                 "OPENAI_API_BASE",
                 "https://open.bigmodel.cn/api/paas/v4",
             ),
-            model=os.environ.get("OPENAI_MODEL", "glm-4-flash"),
+            model=os.environ.get("OPENAI_MODEL", "glm-5"),
             temperature=0.7,
         )
 

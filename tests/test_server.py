@@ -1,9 +1,13 @@
 """Tests for the FastAPI server."""
 
+import os
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from langgraph_chat.server import app
+
+_has_api_key = bool(os.environ.get("OPENAI_API_KEY"))
 
 
 @pytest.fixture
@@ -34,6 +38,7 @@ async def test_chat_endpoint(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(_has_api_key, reason="Real LLM active; echo mode not used")
 async def test_chat_endpoint_echo(client: AsyncClient):
     """In echo mode, reply should contain the user message."""
     response = await client.post(
