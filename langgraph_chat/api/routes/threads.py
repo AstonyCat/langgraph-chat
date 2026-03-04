@@ -20,24 +20,28 @@ router = APIRouter(prefix="/threads", tags=["Threads"])
 
 
 @router.post("", response_model=Thread)
-async def create_thread(body: ThreadCreate) -> Thread:
+async def create_thread(body: ThreadCreate | None = None) -> Thread:
+    b = body or ThreadCreate()
     try:
         return storage.create_thread(
-            thread_id=body.thread_id,
-            metadata=body.metadata,
-            if_exists=body.if_exists,
+            thread_id=b.thread_id,
+            metadata=b.metadata,
+            if_exists=b.if_exists,
         )
     except KeyError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.post("/search", response_model=list[Thread])
-async def search_threads(body: ThreadSearch) -> list[Thread]:
+async def search_threads(
+    body: ThreadSearch | None = None,
+) -> list[Thread]:
+    b = body or ThreadSearch()
     return storage.search_threads(
-        metadata=body.metadata,
-        status=body.status,
-        limit=body.limit,
-        offset=body.offset,
+        metadata=b.metadata,
+        status=b.status,
+        limit=b.limit,
+        offset=b.offset,
     )
 
 

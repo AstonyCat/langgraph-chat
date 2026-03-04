@@ -34,12 +34,15 @@ async def create_assistant(body: AssistantCreate) -> Assistant:
 
 
 @router.post("/search", response_model=list[Assistant])
-async def search_assistants(body: AssistantSearch) -> list[Assistant]:
+async def search_assistants(
+    body: AssistantSearch | None = None,
+) -> list[Assistant]:
+    b = body or AssistantSearch()
     return storage.search_assistants(
-        graph_id=body.graph_id,
-        metadata=body.metadata,
-        limit=body.limit,
-        offset=body.offset,
+        graph_id=b.graph_id,
+        metadata=b.metadata,
+        limit=b.limit,
+        offset=b.offset,
     )
 
 
@@ -53,8 +56,14 @@ async def count_assistants(body: dict[str, Any] | None = None) -> int:
 async def get_assistant(assistant_id: str) -> Assistant:
     try:
         return storage.get_assistant(assistant_id)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+    except KeyError:
+        results = storage.search_assistants(limit=1)
+        if results:
+            return results[0]
+        raise HTTPException(
+            status_code=404,
+            detail=f"Assistant {assistant_id} not found",
+        ) from None
 
 
 @router.patch("/{assistant_id}", response_model=Assistant)
@@ -78,8 +87,11 @@ async def get_assistant_graph(assistant_id: str) -> dict[str, Any]:
     """Return the graph structure for visualization."""
     try:
         assistant = storage.get_assistant(assistant_id)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+    except KeyError:
+        results = storage.search_assistants(limit=1)
+        if not results:
+            raise HTTPException(status_code=404, detail="No assistants") from None
+        assistant = results[0]
 
     from langgraph_chat.api.graph_registry import get_graph_structure
 
@@ -91,8 +103,11 @@ async def get_assistant_schemas(assistant_id: str) -> dict[str, Any]:
     """Return input/output schemas for the assistant's graph."""
     try:
         assistant = storage.get_assistant(assistant_id)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+    except KeyError:
+        results = storage.search_assistants(limit=1)
+        if not results:
+            raise HTTPException(status_code=404, detail="No assistants") from None
+        assistant = results[0]
 
     from langgraph_chat.api.graph_registry import get_graph_schemas
 
