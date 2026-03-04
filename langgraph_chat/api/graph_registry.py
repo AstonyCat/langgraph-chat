@@ -172,23 +172,162 @@ def execute_graph(
         graph_input["messages"] = deserialized_existing + graph_input["messages"]
 
     result = graph.invoke(graph_input)
-
     serialized = {
         "messages": _serialize_messages(result.get("messages", []))
     }
+    _save_state(thread_id, assistant_id, serialized)
+    return serialized
 
-    checkpoint_id = f"checkpoint-{thread_id}-{_now().isoformat()}"
+
+def stream_graph(
+    assistant_id: str,
+    thread_id: str,
+    input_data: Any,
+    stream_mode: list[str] | None = None,
+) -> Any:
+    """Stream graph execution using real graph.stream().
+
+    Yields (event_type, data) tuples matching LangGraph Server SSE.
+    """
+
+    graph_id = _resolve_graph_id(assistant_id)
+    graph = _get_or_build_graph(graph_id)
+    graph_input = _deserialize_input(input_data)
+
+    modes = stream_mode or ["values"]
+    use_multi = len(modes) > 1
+
+    accumulated_content: dict[str, str] = {}
+
+    if use_multi:
+        for mode, chunk in graph.stream(
+            graph_input, stream_mode=modes
+        ):
+            yield from _process_stream_chunk(
+                mode, chunk, accumulated_content
+            )
+    else:
+        single_mode = modes[0]
+        for chunk in graph.stream(
+            graph_input, stream_mode=single_mode
+        ):
+            yield from _process_stream_chunk(
+                single_mode, chunk, accumulated_content
+            )
+
+    final_result = graph.invoke(graph_input)
+    serialized = {
+        "messages": _serialize_messages(
+            final_result.get("messages", [])
+        )
+    }
+    _save_state(thread_id, assistant_id, serialized)
+
+
+def _process_stream_chunk(
+    mode: str, chunk: Any, accumulated: dict[str, str]
+) -> Any:
+    """Convert a graph.stream() chunk to SSE event tuples."""
+    if mode == "values":
+        if isinstance(chunk, dict) and "messages" in chunk:
+            yield (
+                "values",
+                {
+                    "messages": _serialize_messages(
+                        chunk["messages"]
+                    )
+                },
+            )
+        else:
+            yield ("values", chunk)
+
+    elif mode == "updates":
+        if isinstance(chunk, dict):
+            serialized_update = {}
+            for node, data in chunk.items():
+                if (
+                    isinstance(data, dict)
+                    and "messages" in data
+                ):
+                    serialized_update[node] = {
+                        "messages": _serialize_messages(
+                            data["messages"]
+                        )
+                    }
+                else:
+                    serialized_update[node] = data
+            yield ("updates", serialized_update)
+
+    elif mode == "messages":
+        msg_chunk, metadata = chunk
+        node = metadata.get("langgraph_node", "agent")
+        run_id = metadata.get("run_id", "")
+        msg_id = getattr(msg_chunk, "id", "") or run_id
+
+        if msg_id not in accumulated:
+            accumulated[msg_id] = ""
+            yield (
+                "messages/metadata",
+                {
+                    msg_id: {
+                        "metadata": {
+                            "langgraph_node": node,
+                            **{
+                                k: v
+                                for k, v in metadata.items()
+                                if k.startswith("ls_")
+                            },
+                        }
+                    }
+                },
+            )
+
+        content = str(getattr(msg_chunk, "content", ""))
+        if content:
+            accumulated[msg_id] += content
+
+        rm = getattr(msg_chunk, "response_metadata", {}) or {}
+        partial: dict[str, Any] = {
+            "content": accumulated[msg_id],
+            "id": msg_id,
+            "type": "ai",
+            "response_metadata": (
+                {
+                    "model_provider": rm.get(
+                        "model_provider", ""
+                    )
+                }
+                if not rm.get("finish_reason")
+                else rm
+            ),
+        }
+
+        um = _serialize_usage(msg_chunk)
+        if um and um.get("total_tokens"):
+            partial["usage"] = um
+
+        yield ("messages/partial", [partial])
+
+
+def _save_state(
+    thread_id: str, assistant_id: str, serialized: dict
+) -> None:
+    """Persist graph result as thread state."""
+    checkpoint_id = (
+        f"checkpoint-{thread_id}-{_now().isoformat()}"
+    )
     state = ThreadState(
         values=serialized,
         next=[],
         tasks=[],
-        checkpoint={"thread_id": thread_id, "checkpoint_id": checkpoint_id},
+        checkpoint={
+            "thread_id": thread_id,
+            "checkpoint_id": checkpoint_id,
+        },
         metadata={"assistant_id": assistant_id},
         created_at=_now(),
     )
     storage.set_thread_state(thread_id, state)
-
-    return serialized
 
 
 def apply_state_update(thread_id: str, update: ThreadStateUpdate) -> None:

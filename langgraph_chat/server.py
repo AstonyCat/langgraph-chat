@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from langgraph_chat.graph import chat
+from langgraph_chat.graph import chat, graph
 
 app = FastAPI(title="LangGraph Chat", version="0.1.0")
 
@@ -49,66 +49,81 @@ async def api_chat(request: ChatRequest) -> ChatResponse:
 
 @app.post("/api/chat/stream")
 async def api_chat_stream(request: ChatRequest) -> StreamingResponse:
-    """SSE streaming in official LangGraph messages/partial format."""
+    """SSE streaming using real graph.stream(stream_mode='messages')."""
 
     async def event_generator() -> AsyncIterator[str]:
         run_id = str(uuid4())
-        lc_run_id = f"lc_run--{uuid4()}"
-
         yield _sse("metadata", {"run_id": run_id, "attempt": 1})
 
         try:
-            response = await asyncio.to_thread(chat, request.message)
-            content = str(response.content)
-            rm = getattr(response, "response_metadata", None) or {}
+            from langchain_core.messages import HumanMessage
 
-            yield _sse(
-                "messages/metadata",
-                {
-                    lc_run_id: {
-                        "metadata": {
-                            "langgraph_node": "chatbot",
-                            "ls_model_name": rm.get("model_name", ""),
-                            "ls_provider": rm.get(
-                                "model_provider", ""
-                            ),
-                        }
-                    }
-                },
-            )
+            inp = {
+                "messages": [HumanMessage(content=request.message)]
+            }
 
-            for i in range(1, len(content) + 1):
-                partial: dict[str, Any] = {
-                    "content": content[:i],
-                    "id": lc_run_id,
-                    "type": "ai",
-                    "response_metadata": {},
-                }
-                if i == len(content):
-                    partial["response_metadata"] = {
-                        "finish_reason": rm.get(
-                            "finish_reason", "stop"
-                        ),
-                        "model_name": rm.get("model_name", ""),
-                        "model_provider": rm.get(
-                            "model_provider", ""
-                        ),
+            def _do_stream() -> (
+                list[tuple[str, dict[str, Any]]]
+            ):
+                events: list[tuple[str, dict[str, Any]]] = []
+                accumulated = ""
+                msg_id = ""
+                metadata_sent = False
+
+                for msg_chunk, meta in graph.stream(
+                    inp, stream_mode="messages"
+                ):
+                    node = meta.get("langgraph_node", "agent")
+                    chunk_id = getattr(msg_chunk, "id", "") or ""
+                    if chunk_id and not msg_id:
+                        msg_id = chunk_id
+
+                    if not metadata_sent and msg_id:
+                        events.append((
+                            "messages/metadata",
+                            {
+                                msg_id: {
+                                    "metadata": {
+                                        "langgraph_node": node,
+                                    }
+                                }
+                            },
+                        ))
+                        metadata_sent = True
+
+                    content = str(
+                        getattr(msg_chunk, "content", "")
+                    )
+                    if content:
+                        accumulated += content
+
+                    rm = (
+                        getattr(
+                            msg_chunk, "response_metadata", {}
+                        )
+                        or {}
+                    )
+                    partial: dict[str, Any] = {
+                        "content": accumulated,
+                        "id": msg_id,
+                        "type": "ai",
+                        "response_metadata": rm if rm else {},
                     }
-                    usage = rm.get("token_usage", {})
-                    if usage:
-                        partial["usage"] = {
-                            "input_tokens": usage.get(
-                                "prompt_tokens", 0
-                            ),
-                            "output_tokens": usage.get(
-                                "completion_tokens", 0
-                            ),
-                            "total_tokens": usage.get(
-                                "total_tokens", 0
-                            ),
-                        }
-                yield _sse("messages/partial", [partial])
-                await asyncio.sleep(0.02)
+
+                    um = getattr(
+                        msg_chunk, "usage_metadata", None
+                    )
+                    if um:
+                        u = um if isinstance(um, dict) else {}
+                        if u.get("total_tokens"):
+                            partial["usage"] = u
+
+                    events.append(("messages/partial", [partial]))
+                return events
+
+            events = await asyncio.to_thread(_do_stream)
+            for event_type, data in events:
+                yield _sse(event_type, data)
 
             yield _sse("end", None)
         except Exception as e:

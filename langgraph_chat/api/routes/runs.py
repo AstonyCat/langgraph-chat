@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 from typing import Any
-from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -48,11 +47,12 @@ async def _stream_run(
     assistant_id: str,
     stream_mode: list[str] | str = "values",
 ) -> Any:
-    """Execute graph and yield SSE events in official LangGraph format."""
-    from langgraph_chat.api.graph_registry import execute_graph
+    """Stream graph execution using real graph.stream()."""
+    from langgraph_chat.api.graph_registry import stream_graph
 
-    modes = [stream_mode] if isinstance(stream_mode, str) else stream_mode
-    lc_run_id = f"lc_run--{uuid4()}"
+    modes = (
+        [stream_mode] if isinstance(stream_mode, str) else stream_mode
+    )
 
     yield _sse("metadata", {"run_id": run.run_id, "attempt": 1})
 
@@ -60,67 +60,19 @@ async def _stream_run(
     storage.set_thread_status(thread_id, "busy")
 
     try:
-        result = await asyncio.to_thread(
-            execute_graph, assistant_id, thread_id, input_data
-        )
-        ai_msgs = [
-            m for m in result.get("messages", []) if m.get("type") == "ai"
-        ]
-        last_ai = ai_msgs[-1] if ai_msgs else None
 
-        if "updates" in modes:
-            yield _sse("updates", {"chatbot": None})
+        def _do_stream() -> list[tuple[str, Any]]:
+            events = []
+            for event_type, data in stream_graph(
+                assistant_id, thread_id, input_data, modes
+            ):
+                events.append((event_type, data))
+            return events
 
-        if last_ai and "messages" in modes:
-            content = last_ai.get("content", "")
-            rm = last_ai.get("response_metadata", {})
-            yield _sse(
-                "messages/metadata",
-                {
-                    lc_run_id: {
-                        "metadata": {
-                            "langgraph_node": "chatbot",
-                            "ls_model_name": rm.get("model_name", ""),
-                            "ls_provider": rm.get("model_provider", ""),
-                        }
-                    }
-                },
-            )
-            for i in range(1, len(content) + 1):
-                partial = {
-                    "content": content[:i],
-                    "id": lc_run_id,
-                    "type": "ai",
-                    "response_metadata": {},
-                }
-                if i == len(content):
-                    partial["response_metadata"] = {
-                        "finish_reason": rm.get("finish_reason", "stop"),
-                        "model_name": rm.get("model_name", ""),
-                        "model_provider": rm.get("model_provider", ""),
-                    }
-                    usage = rm.get("token_usage", {})
-                    if usage:
-                        partial["usage"] = {
-                            "input_tokens": usage.get(
-                                "prompt_tokens", 0
-                            ),
-                            "output_tokens": usage.get(
-                                "completion_tokens", 0
-                            ),
-                            "total_tokens": usage.get(
-                                "total_tokens", 0
-                            ),
-                        }
-                yield _sse("messages/partial", [partial])
-                await asyncio.sleep(0.02)
+        events = await asyncio.to_thread(_do_stream)
 
-        if "updates" in modes:
-            node_output = {"messages": ai_msgs} if ai_msgs else {}
-            yield _sse("updates", {"chatbot": node_output})
-
-        if "values" in modes:
-            yield _sse("values", result)
+        for event_type, data in events:
+            yield _sse(event_type, data)
 
         storage.update_run_status(run.run_id, "success")
         storage.set_thread_status(thread_id, "idle")
@@ -128,6 +80,7 @@ async def _stream_run(
         yield _sse("end", None)
 
     except Exception as e:
+        logger.exception("Stream run %s failed", run.run_id)
         storage.update_run_status(run.run_id, "error")
         storage.set_thread_status(thread_id, "error")
         yield _sse("error", {"message": str(e)})
