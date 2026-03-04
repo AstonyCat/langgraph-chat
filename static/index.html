@@ -200,7 +200,9 @@
             const botDiv = addBotPlaceholder();
             const botText = botDiv.querySelector('.bot-text');
             const cursor = botDiv.querySelector('.typing-cursor');
-            let full = '';
+            let modelName = '';
+            let totalTokens = 0;
+            let lastContent = '';
 
             const res = await fetch('/api/chat/stream', {
                 method: 'POST',
@@ -211,7 +213,6 @@
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
-            let metadata = null;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -230,14 +231,22 @@
                         if (!raw) continue;
                         try {
                             const payload = JSON.parse(raw);
-                            if (currentEvent === 'token') {
-                                full += payload.content;
-                                botText.textContent = full;
-                                chatContainer.scrollTop = chatContainer.scrollHeight;
-                            } else if (currentEvent === 'done') {
-                                full = payload.full;
-                                botText.textContent = full;
-                                metadata = payload.metadata;
+                            if (currentEvent === 'messages/partial') {
+                                const msg = Array.isArray(payload) ? payload[0] : payload;
+                                if (msg && msg.content) {
+                                    lastContent = msg.content;
+                                    botText.textContent = lastContent;
+                                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                                }
+                                const rm = msg?.response_metadata || {};
+                                if (rm.model_name) modelName = rm.model_name;
+                                if (msg?.usage?.total_tokens) totalTokens = msg.usage.total_tokens;
+                            } else if (currentEvent === 'messages/metadata') {
+                                const keys = Object.keys(payload);
+                                if (keys.length > 0) {
+                                    const meta = payload[keys[0]]?.metadata || {};
+                                    if (meta.ls_model_name) modelName = meta.ls_model_name;
+                                }
                             }
                         } catch (e) { /* skip */ }
                     }
@@ -249,12 +258,8 @@
             const meta = document.createElement('div');
             meta.className = 'meta';
             let metaText = `流式 SSE · ${elapsed}s`;
-            if (metadata && metadata.model) {
-                metaText += ` · ${metadata.model}`;
-            }
-            if (metadata && metadata.tokens && metadata.tokens.total_tokens) {
-                metaText += ` · ${metadata.tokens.total_tokens} tokens`;
-            }
+            if (modelName) metaText += ` · ${modelName}`;
+            if (totalTokens) metaText += ` · ${totalTokens} tokens`;
             meta.textContent = metaText;
             botDiv.appendChild(meta);
         }

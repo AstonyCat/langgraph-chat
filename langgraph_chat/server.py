@@ -7,6 +7,7 @@ import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -19,7 +20,9 @@ app = FastAPI(title="LangGraph Chat", version="0.1.0")
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    app.mount(
+        "/static", StaticFiles(directory=str(STATIC_DIR)), name="static"
+    )
 
 
 class ChatRequest(BaseModel):
@@ -46,35 +49,86 @@ async def api_chat(request: ChatRequest) -> ChatResponse:
 
 @app.post("/api/chat/stream")
 async def api_chat_stream(request: ChatRequest) -> StreamingResponse:
-    """SSE streaming: push tokens as they arrive."""
+    """SSE streaming in official LangGraph messages/partial format."""
 
     async def event_generator() -> AsyncIterator[str]:
-        yield _sse("start", {"status": "started"})
+        run_id = str(uuid4())
+        lc_run_id = f"lc_run--{uuid4()}"
+
+        yield _sse("metadata", {"run_id": run_id, "attempt": 1})
+
         try:
             response = await asyncio.to_thread(chat, request.message)
             content = str(response.content)
-            for i in range(0, len(content), 4):
-                chunk = content[i : i + 4]
-                yield _sse("token", {"content": chunk})
-                await asyncio.sleep(0.03)
-            metadata: dict[str, Any] = {}
-            rm = getattr(response, "response_metadata", None)
-            if rm:
-                metadata["model"] = rm.get("model_name", "")
-                metadata["tokens"] = rm.get("token_usage", {})
-            yield _sse("done", {"full": content, "metadata": metadata})
+            rm = getattr(response, "response_metadata", None) or {}
+
+            yield _sse(
+                "messages/metadata",
+                {
+                    lc_run_id: {
+                        "metadata": {
+                            "langgraph_node": "chatbot",
+                            "ls_model_name": rm.get("model_name", ""),
+                            "ls_provider": rm.get(
+                                "model_provider", ""
+                            ),
+                        }
+                    }
+                },
+            )
+
+            for i in range(1, len(content) + 1):
+                partial: dict[str, Any] = {
+                    "content": content[:i],
+                    "id": lc_run_id,
+                    "type": "ai",
+                    "response_metadata": {},
+                }
+                if i == len(content):
+                    partial["response_metadata"] = {
+                        "finish_reason": rm.get(
+                            "finish_reason", "stop"
+                        ),
+                        "model_name": rm.get("model_name", ""),
+                        "model_provider": rm.get(
+                            "model_provider", ""
+                        ),
+                    }
+                    usage = rm.get("token_usage", {})
+                    if usage:
+                        partial["usage"] = {
+                            "input_tokens": usage.get(
+                                "prompt_tokens", 0
+                            ),
+                            "output_tokens": usage.get(
+                                "completion_tokens", 0
+                            ),
+                            "total_tokens": usage.get(
+                                "total_tokens", 0
+                            ),
+                        }
+                yield _sse("messages/partial", [partial])
+                await asyncio.sleep(0.02)
+
+            yield _sse("end", None)
         except Exception as e:
             yield _sse("error", {"message": str(e)})
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
 def _sse(event: str, data: Any) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    payload = (
+        json.dumps(data, ensure_ascii=False) if data is not None else ""
+    )
+    return f"event: {event}\ndata: {payload}\n\n"
 
 
 @app.get("/api/health")
