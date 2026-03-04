@@ -83,6 +83,13 @@
             padding-top: 4px;
         }
         .message.bot .meta { color: #9ca3af; }
+        .tool-status {
+            font-size: 0.8rem;
+            color: #6366f1;
+            padding: 4px 0;
+            opacity: 0.9;
+        }
+        .tool-status::before { content: '🔧 '; }
         .typing-cursor {
             display: inline-block;
             width: 2px;
@@ -202,7 +209,7 @@
             const cursor = botDiv.querySelector('.typing-cursor');
             let modelName = '';
             let totalTokens = 0;
-            let lastContent = '';
+            let toolStatus = null;
 
             const res = await fetch('/api/chat/stream', {
                 method: 'POST',
@@ -231,21 +238,43 @@
                         if (!raw) continue;
                         try {
                             const payload = JSON.parse(raw);
+
                             if (currentEvent === 'messages/partial') {
                                 const msg = Array.isArray(payload) ? payload[0] : payload;
                                 if (msg && msg.content) {
-                                    lastContent = msg.content;
-                                    botText.textContent = lastContent;
+                                    if (toolStatus) { toolStatus.remove(); toolStatus = null; }
+                                    botText.textContent = msg.content;
                                     chatContainer.scrollTop = chatContainer.scrollHeight;
                                 }
                                 const rm = msg?.response_metadata || {};
                                 if (rm.model_name) modelName = rm.model_name;
+                                if (rm.finish_reason === 'tool_calls' && !toolStatus) {
+                                    toolStatus = document.createElement('div');
+                                    toolStatus.className = 'tool-status';
+                                    toolStatus.textContent = '正在调用工具...';
+                                    botDiv.insertBefore(toolStatus, cursor);
+                                }
                                 if (msg?.usage?.total_tokens) totalTokens = msg.usage.total_tokens;
+
                             } else if (currentEvent === 'messages/metadata') {
                                 const keys = Object.keys(payload);
                                 if (keys.length > 0) {
-                                    const meta = payload[keys[0]]?.metadata || {};
-                                    if (meta.ls_model_name) modelName = meta.ls_model_name;
+                                    const m = payload[keys[0]]?.metadata || {};
+                                    if (m.ls_model_name) modelName = m.ls_model_name;
+                                }
+
+                            } else if (currentEvent === 'updates') {
+                                const nodes = Object.keys(payload);
+                                for (const n of nodes) {
+                                    const d = payload[n];
+                                    if (n === 'tools' && d?.messages) {
+                                        if (toolStatus) {
+                                            const toolNames = d.messages
+                                                .filter(m => m.name)
+                                                .map(m => m.name);
+                                            toolStatus.textContent = `工具返回: ${toolNames.join(', ')}`;
+                                        }
+                                    }
                                 }
                             }
                         } catch (e) { /* skip */ }
@@ -253,6 +282,7 @@
                 }
             }
 
+            if (toolStatus) toolStatus.remove();
             cursor.remove();
             const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
             const meta = document.createElement('div');
