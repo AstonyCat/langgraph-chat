@@ -9,7 +9,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from langgraph_chat.api.models import ThreadState, ThreadStateUpdate
 from langgraph_chat.api.storage import storage
@@ -31,31 +31,84 @@ def _get_or_build_graph(graph_id: str) -> Any:
     return _graphs[graph_id]
 
 
-def _serialize_messages(messages: list) -> list[dict[str, Any]]:
-    """Convert LangChain message objects to serializable dicts."""
+def _serialize_tool_calls(tool_calls: list) -> list[dict[str, Any]]:
+    """Serialize tool_calls to match official format."""
     result = []
-    for msg in messages:
-        if isinstance(msg, HumanMessage):
+    for tc in tool_calls:
+        if isinstance(tc, dict):
             result.append({
-                "type": "human",
-                "content": str(msg.content),
-                "id": getattr(msg, "id", None),
+                "id": tc.get("id", ""),
+                "name": tc.get("name", ""),
+                "args": tc.get("args", {}),
+                "type": tc.get("type", "tool_call"),
             })
-        elif isinstance(msg, AIMessage):
-            result.append({
-                "type": "ai",
-                "content": str(msg.content),
-                "id": getattr(msg, "id", None),
-                "response_metadata": getattr(msg, "response_metadata", {}),
-            })
-        elif isinstance(msg, dict):
-            result.append(msg)
         else:
             result.append({
-                "type": getattr(msg, "type", "unknown"),
-                "content": str(getattr(msg, "content", msg)),
-                "id": getattr(msg, "id", None),
+                "id": getattr(tc, "id", ""),
+                "name": getattr(tc, "name", ""),
+                "args": getattr(tc, "args", {}),
+                "type": "tool_call",
             })
+    return result
+
+
+def _serialize_usage(msg: Any) -> dict[str, Any] | None:
+    """Extract usage_metadata matching official format."""
+    um = getattr(msg, "usage_metadata", None)
+    if not um:
+        return None
+    if isinstance(um, dict):
+        return {
+            "input_tokens": um.get("input_tokens", 0),
+            "output_tokens": um.get("output_tokens", 0),
+            "total_tokens": um.get("total_tokens", 0),
+        }
+    return {
+        "input_tokens": getattr(um, "input_tokens", 0),
+        "output_tokens": getattr(um, "output_tokens", 0),
+        "total_tokens": getattr(um, "total_tokens", 0),
+    }
+
+
+def _serialize_messages(messages: list) -> list[dict[str, Any]]:
+    """Convert LangChain messages to official LangGraph format."""
+    result = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            result.append(msg)
+            continue
+
+        base: dict[str, Any] = {
+            "type": getattr(msg, "type", "unknown"),
+            "content": str(getattr(msg, "content", "")),
+            "id": getattr(msg, "id", None),
+            "name": getattr(msg, "name", None),
+            "additional_kwargs": getattr(
+                msg, "additional_kwargs", {}
+            ),
+            "response_metadata": getattr(
+                msg, "response_metadata", {}
+            ),
+        }
+
+        if isinstance(msg, AIMessage):
+            tc = getattr(msg, "tool_calls", [])
+            base["tool_calls"] = _serialize_tool_calls(tc)
+            base["invalid_tool_calls"] = getattr(
+                msg, "invalid_tool_calls", []
+            )
+            um = _serialize_usage(msg)
+            if um:
+                base["usage_metadata"] = um
+
+        if isinstance(msg, ToolMessage):
+            base["tool_call_id"] = getattr(
+                msg, "tool_call_id", ""
+            )
+            base["artifact"] = getattr(msg, "artifact", None)
+            base["status"] = getattr(msg, "status", "success")
+
+        result.append(base)
     return result
 
 

@@ -1,4 +1,4 @@
-"""LangGraph chat graph definition."""
+"""LangGraph ReAct agent with tool calling."""
 
 from __future__ import annotations
 
@@ -6,23 +6,16 @@ import os
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage
-from langgraph.graph import END, START, StateGraph
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.graph import START, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
 
 from langgraph_chat.state import ChatState
+from langgraph_chat.tools import all_tools
 
 
 def _get_llm() -> BaseChatModel:
-    """Return a chat model based on environment configuration.
-
-    Uses OpenAI-compatible API if OPENAI_API_KEY is set, otherwise falls
-    back to a deterministic echo model for development/testing.
-
-    Environment variables:
-        OPENAI_API_KEY: API key (required for real LLM).
-        OPENAI_API_BASE: Base URL, defaults to Zhipu AI endpoint.
-        OPENAI_MODEL: Model name, defaults to glm-5.
-    """
+    """Return a chat model with tools bound."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
         from langchain_openai import ChatOpenAI
@@ -41,37 +34,35 @@ def _get_llm() -> BaseChatModel:
     return EchoChatModel()
 
 
-def chatbot_node(state: ChatState) -> dict[str, Any]:
-    """Process the conversation and generate a response."""
+def agent_node(state: ChatState) -> dict[str, Any]:
+    """LLM decides whether to call tools or respond directly."""
     llm = _get_llm()
-    response = llm.invoke(state["messages"])
+    llm_with_tools = llm.bind_tools(all_tools)
+    response = llm_with_tools.invoke(state["messages"])
     return {"messages": [response]}
 
 
 def build_graph() -> Any:
-    """Build and return the compiled chat graph."""
-    graph_builder = StateGraph(ChatState)
-    graph_builder.add_node("chatbot", chatbot_node)
-    graph_builder.add_edge(START, "chatbot")
-    graph_builder.add_edge("chatbot", END)
-    return graph_builder.compile()
+    """Build ReAct agent: agent → tools_condition → tools ↔ agent."""
+    builder = StateGraph(ChatState)
+
+    builder.add_node("agent", agent_node)
+    builder.add_node("tools", ToolNode(tools=all_tools))
+
+    builder.add_edge(START, "agent")
+    builder.add_conditional_edges("agent", tools_condition)
+    builder.add_edge("tools", "agent")
+
+    return builder.compile()
 
 
 graph = build_graph()
 
 
-def chat(user_message: str, history: list[Any] | None = None) -> AIMessage:
-    """Send a message and get a response.
-
-    Args:
-        user_message: The user's message text.
-        history: Optional list of previous messages for context.
-
-    Returns:
-        The AI's response message.
-    """
-    from langchain_core.messages import HumanMessage
-
+def chat(
+    user_message: str, history: list[Any] | None = None
+) -> AIMessage:
+    """Send a message and get a response."""
     messages = list(history) if history else []
     messages.append(HumanMessage(content=user_message))
 
